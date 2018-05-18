@@ -83,6 +83,49 @@ static void reallymarkobject (global_State *g, GCObject *o);
 
 /*
 ** {======================================================
+** Statistic functions
+** =======================================================
+*/
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <time.h>
+#include <stdio.h>
+
+static int gcs_sock, gcs_timing_id;
+static struct sockaddr_in servaddr;
+static clock_t gcs_start_t;
+void gcs_timing_begin(int id)
+{
+  gcs_timing_id = id;
+  gcs_start_t = clock();
+}
+
+void gcs_timing_end(const char *msg)
+{
+  if (!servaddr.sin_port)
+    {
+      servaddr.sin_family = AF_INET;
+      servaddr.sin_port = htons(2222);
+      servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+      if ((gcs_sock = socket(PF_INET, SOCK_DGRAM, 0)) < 0)
+        perror("create udp socket failure");
+    }
+  if (gcs_sock > 0)
+    {
+      char buf[4096];
+      double t0 = cast(double, gcs_start_t)/CLOCKS_PER_SEC*1000*1000;
+      double t1 = cast(double, clock())/CLOCKS_PER_SEC*1000*1000;
+
+      snprintf(buf, sizeof(buf), "%03d %s elapsed-us: %f\r\n", gcs_timing_id, msg, (t1-t0));
+      sendto(gcs_sock, buf, strlen(buf), 0, cast(struct sockaddr *, &servaddr), sizeof(servaddr));
+      gcs_timing_id = 0;
+    }
+}
+
+/*
+** {======================================================
 ** Generic functions
 ** =======================================================
 */
@@ -1116,6 +1159,7 @@ void luaC_runtilstate (lua_State *L, int statesmask) {
 
 static void generationalcollection (lua_State *L) {
   global_State *g = G(L);
+  gcs_timing_begin(1); 
   lua_assert(g->gcstate == GCSpropagate);
   if (g->GCestimate == 0) {  /* signal for another major collection? */
     luaC_fullgc(L, 0);  /* perform a full regular collection */
@@ -1133,6 +1177,7 @@ static void generationalcollection (lua_State *L) {
   }
   setpause(g, gettotalbytes(g));
   lua_assert(g->gcstate == GCSpropagate);
+  gcs_timing_end(" generationalcollection");
 }
 
 
@@ -1175,9 +1220,12 @@ void luaC_forcestep (lua_State *L) {
 ** performs a basic GC step only if collector is running
 */
 void luaC_step (lua_State *L) {
+    gcs_timing_begin(2);
+
   global_State *g = G(L);
   if (g->gcrunning) luaC_forcestep(L);
   else luaE_setdebt(g, -GCSTEPSIZE);  /* avoid being called too often */
+  gcs_timing_end("luaC_step");
 }
 
 
