@@ -5,6 +5,12 @@
 -- COMMAND LINE:
 -- /opt/src/lua-5.3.4/bin/lua  binarytrees.lua-2.lua 17
 
+local function gc_count()
+  local k,b,o = collectgarbage("count");
+  io.write(string.format("... %d kb memory in used\t %d objects in used\n",
+  k, o));
+end
+
 local function BottomUpTree(depth)
   if depth > 0 then
     depth = depth - 1
@@ -22,6 +28,8 @@ local function ItemCheck(tree)
     return 1
   end
 end
+
+gc_count();
 
 local N = tonumber(arg and arg[1]) or 0
 local mindepth = 4
@@ -49,3 +57,12 @@ end
 
 io.write(string.format("long lived tree of depth %d\t check: %d\n",
   maxdepth, ItemCheck(longlivedtree)))
+
+  gc_count();
+  collectgarbage("collect")
+  print("collect")
+  gc_count();
+longlivedtree  = nil
+  collectgarbage("collect")
+  gc_count();
+

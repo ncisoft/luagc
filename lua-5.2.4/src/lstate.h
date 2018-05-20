@@ -113,6 +113,7 @@ typedef struct global_State {
   lua_Alloc frealloc;  /* function to reallocate memory */
   void *ud;         /* auxiliary data to `frealloc' */
   lu_mem totalbytes;  /* number of bytes currently allocated - GCdebt */
+  lu_mem totalobjects;  /* number of objects currently allocated */
   l_mem GCdebt;  /* bytes allocated not yet compensated by the collector */
   lu_mem GCmemtrav;  /* memory traversed by the GC */
   lu_mem GCestimate;  /* an estimate of the non-garbage memory in use */
@@ -149,8 +150,24 @@ typedef struct global_State {
 
 
 /*
-** `per thread' state
-*/
+ ** `per thread' state
+ */
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <time.h>
+
+typedef struct 
+{
+  int sock;
+  int timing_id;
+  struct sockaddr_in servaddr;
+  clock_t start_t;
+  l_mem start_total_objects;
+  l_mem start_total_bytes;
+} gcs_context_t;
+
 struct lua_State {
   CommonHeader;
   lu_byte status;
@@ -173,6 +190,7 @@ struct lua_State {
   struct lua_longjmp *errorJmp;  /* current error recover point */
   ptrdiff_t errfunc;  /* current error handling function (stack index) */
   CallInfo base_ci;  /* CallInfo for first level (C calling Lua) */
+  gcs_context_t gcs_context;
 };
 
 

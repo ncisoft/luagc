@@ -1,0 +1,13 @@
+Breakpoint 1, 0x0000555555561830 in singlestep ()
+     (gdb) bt
+#0  0x0000555555561830 in singlestep ()
+#1  0x0000555555562422 in luaC_forcestep ()
+#2  0x000055555555efa3 in luaD_precall ()
+#3  0x000055555555f322 in luaD_call ()
+#4  0x000055555555e91c in luaD_rawrunprotected ()
+#5  0x000055555555f58f in luaD_pcall ()
+#6  0x000055555555cfd3 in lua_pcallk ()
+#7  0x000055555555aa6b in main ()
+     (gdb) c
+     Continuing.
+

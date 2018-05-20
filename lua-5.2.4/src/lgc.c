@@ -92,35 +92,102 @@ static void reallymarkobject (global_State *g, GCObject *o);
 #include <arpa/inet.h>
 #include <time.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 
-static int gcs_sock, gcs_timing_id;
-static struct sockaddr_in servaddr;
-static clock_t gcs_start_t;
-void gcs_timing_begin(int id)
+
+static void panic(int exit_code, const char *msg)
 {
-  gcs_timing_id = id;
-  gcs_start_t = clock();
+  fprintf(stderr, "%s\n", msg);
+  _exit(exit_code);
 }
 
-void gcs_timing_end(const char *msg)
+static void init_gcs_context(lua_State *L)
 {
-  if (!servaddr.sin_port)
+  if (!L->gcs_context.sock)
     {
-      servaddr.sin_family = AF_INET;
-      servaddr.sin_port = htons(2222);
-      servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+      int gcs_sock;
+      printf("init gcs_context\n");
       if ((gcs_sock = socket(PF_INET, SOCK_DGRAM, 0)) < 0)
-        perror("create udp socket failure");
+        panic(-1, "create udp socket failure");
+      L->gcs_context.sock = gcs_sock;
     }
-  if (gcs_sock > 0)
+}
+
+void gcs_timing_begin(lua_State *L, int id)
+{
+  global_State *g = G(L);
+  init_gcs_context(L);
+  L->gcs_context.timing_id = id;
+  L->gcs_context.start_total_bytes = gettotalbytes(g);
+  L->gcs_context.start_total_objects = g->totalobjects;
+  L->gcs_context.start_t  = clock();
+}
+
+static char *thSpliter(l_mem num, char *buf)
+{
+  l_mem set[8];
+  char thbuf[5];
+  int n=0;
+
+  if (num < 1000 || 1 < 0)
+    {
+      snprintf(buf, 16, "%lu", num);
+      return buf;
+    }
+
+  while (num > 1000)
+    {
+      set[n++] = num%1000;
+      num /= 1000;
+    }
+  set[n] = num;
+  strcpy(buf, "");
+  for (; n >=0; n--)
+    {
+      if (n > 0)
+        snprintf(thbuf, sizeof(thbuf), "%lu,", set[n]);
+     else 
+       snprintf(thbuf, sizeof(thbuf), "%lu", set[n]);
+     strcat(buf, thbuf);
+    }
+
+  return buf;
+}
+
+int lua_totalobjects(lua_State *L)
+{
+  global_State *g = G(L);
+  return  cast(int , g->totalobjects);
+}
+
+void gcs_timing_end(lua_State *L, const char *msg)
+{
+  global_State *g = G(L);
+
+  if (!L->gcs_context.servaddr.sin_port)
+    {
+      L->gcs_context.servaddr.sin_family = AF_INET;
+      L->gcs_context.servaddr.sin_port = htons(2222);
+      L->gcs_context.servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    }
+  if (L->gcs_context.sock > 0)
     {
       char buf[4096];
-      double t0 = cast(double, gcs_start_t)/CLOCKS_PER_SEC*1000*1000;
+      double t0 = cast(double, L->gcs_context.start_t)/CLOCKS_PER_SEC*1000*1000;
       double t1 = cast(double, clock())/CLOCKS_PER_SEC*1000*1000;
 
-      snprintf(buf, sizeof(buf), "%03d %s elapsed-us: %f\r\n", gcs_timing_id, msg, (t1-t0));
-      sendto(gcs_sock, buf, strlen(buf), 0, cast(struct sockaddr *, &servaddr), sizeof(servaddr));
-      gcs_timing_id = 0;
+      if ((t1-t0) >= 1*500) // more than 2ms
+        {
+          char th1[16], th2[16], th3[16], th4[16];
+          snprintf(buf, sizeof(buf), "%03d %.0f %s elapsed-us: | *%.0f | %s --> %s | %s --> %s \r\n", 
+                   L->gcs_context.timing_id, t0, msg, (t1-t0), 
+                   thSpliter(L->gcs_context.start_total_bytes, th3),
+                   thSpliter(gettotalbytes(g), th4),
+                   thSpliter(L->gcs_context.start_total_objects, th1), thSpliter(g->totalobjects, th2) );
+          sendto(L->gcs_context.sock, buf, strlen(buf), 0, cast(struct sockaddr *, &L->gcs_context.servaddr), sizeof(L->gcs_context.servaddr));
+        }
+      L->gcs_context.timing_id = 0;
     }
 }
 
@@ -263,6 +330,7 @@ GCObject *luaC_newobj (lua_State *L, int tt, size_t sz, GCObject **list,
   gch(o)->tt = tt;
   gch(o)->next = *list;
   *list = o;
+  g->totalobjects++;
   return o;
 }
 
@@ -704,6 +772,7 @@ static void clearvalues (global_State *g, GCObject *l, GCObject *f) {
 
 
 static void freeobj (lua_State *L, GCObject *o) {
+  global_State *g = G(L);
   switch (gch(o)->tt) {
     case LUA_TPROTO: luaF_freeproto(L, gco2p(o)); break;
     case LUA_TLCL: {
@@ -725,8 +794,9 @@ static void freeobj (lua_State *L, GCObject *o) {
       luaM_freemem(L, o, sizestring(gco2ts(o)));
       break;
     }
-    default: lua_assert(0);
+    default: lua_assert(0); 
   }
+  g->totalobjects--;
 }
 
 
@@ -1085,36 +1155,44 @@ static lu_mem singlestep (lua_State *L) {
   switch (g->gcstate) {
     case GCSpause: {
       /* start to count memory traversed */
+      gcs_timing_begin(L, 30);
       g->GCmemtrav = g->strt.size * sizeof(GCObject*);
       lua_assert(!isgenerational(g));
       restartcollection(g);
       g->gcstate = GCSpropagate;
+      gcs_timing_end(L, "GCSpause");
       return g->GCmemtrav;
     }
     case GCSpropagate: {
       if (g->gray) {
+      gcs_timing_begin(L, 31);
         lu_mem oldtrav = g->GCmemtrav;
         propagatemark(g);
+        gcs_timing_end(L, "GCSpropagate-1");
         return g->GCmemtrav - oldtrav;  /* memory traversed in this step */
       }
       else {  /* no more `gray' objects */
         lu_mem work;
         int sw;
+      gcs_timing_begin(L, 32);
         g->gcstate = GCSatomic;  /* finish mark phase */
         g->GCestimate = g->GCmemtrav;  /* save what was counted */;
         work = atomic(L);  /* add what was traversed by 'atomic' */
         g->GCestimate += work;  /* estimate of total memory traversed */ 
         sw = entersweep(L);
+        gcs_timing_end(L, "GCSpropagate-2-with-sweep");
         return work + sw * GCSWEEPCOST;
       }
     }
     case GCSsweepstring: {
       int i;
+      gcs_timing_begin(L, 33);
       for (i = 0; i < GCSWEEPMAX && g->sweepstrgc + i < g->strt.size; i++)
         sweepwholelist(L, &g->strt.hash[g->sweepstrgc + i]);
       g->sweepstrgc += i;
       if (g->sweepstrgc >= g->strt.size)  /* no more strings to sweep? */
         g->gcstate = GCSsweepudata;
+      gcs_timing_end(L, "GCSsweepstring");
       return i * GCSWEEPCOST;
     }
     case GCSsweepudata: {
@@ -1129,15 +1207,19 @@ static lu_mem singlestep (lua_State *L) {
     }
     case GCSsweep: {
       if (g->sweepgc) {
+          gcs_timing_begin(L, 34);
         g->sweepgc = sweeplist(L, g->sweepgc, GCSWEEPMAX);
+        gcs_timing_end(L, " GCSsweep-1");
         return GCSWEEPMAX*GCSWEEPCOST;
       }
       else {
         /* sweep main thread */
+          gcs_timing_begin(L, 35);
         GCObject *mt = obj2gco(g->mainthread);
         sweeplist(L, &mt, 1);
         checkSizes(L);
         g->gcstate = GCSpause;  /* finish collection */
+        gcs_timing_end(L, " GCSsweep-2");
         return GCSWEEPCOST;
       }
     }
@@ -1151,15 +1233,18 @@ static lu_mem singlestep (lua_State *L) {
 ** by 'statemask'
 */
 void luaC_runtilstate (lua_State *L, int statesmask) {
+    //gcs_timing_begin(L, 0+20);
   global_State *g = G(L);
   while (!testbit(statesmask, g->gcstate))
     singlestep(L);
+  //gcs_timing_end(L, "luaC_runtilstate");
+
 }
 
 
 static void generationalcollection (lua_State *L) {
   global_State *g = G(L);
-  gcs_timing_begin(1); 
+  //gcs_timing_begin(L, 1); 
   lua_assert(g->gcstate == GCSpropagate);
   if (g->GCestimate == 0) {  /* signal for another major collection? */
     luaC_fullgc(L, 0);  /* perform a full regular collection */
@@ -1177,7 +1262,7 @@ static void generationalcollection (lua_State *L) {
   }
   setpause(g, gettotalbytes(g));
   lua_assert(g->gcstate == GCSpropagate);
-  gcs_timing_end(" generationalcollection");
+  //gcs_timing_end(L, "generationalcollection");
 }
 
 
@@ -1220,12 +1305,9 @@ void luaC_forcestep (lua_State *L) {
 ** performs a basic GC step only if collector is running
 */
 void luaC_step (lua_State *L) {
-    gcs_timing_begin(2);
-
   global_State *g = G(L);
   if (g->gcrunning) luaC_forcestep(L);
   else luaE_setdebt(g, -GCSTEPSIZE);  /* avoid being called too often */
-  gcs_timing_end("luaC_step");
 }
 
 
@@ -1237,6 +1319,7 @@ void luaC_step (lua_State *L) {
 void luaC_fullgc (lua_State *L, int isemergency) {
   global_State *g = G(L);
   int origkind = g->gckind;
+  //gcs_timing_begin(L, 10);
   lua_assert(origkind != KGC_EMERGENCY);
   if (isemergency)  /* do not run finalizers during emergency GC */
     g->gckind = KGC_EMERGENCY;
@@ -1261,6 +1344,7 @@ void luaC_fullgc (lua_State *L, int isemergency) {
   setpause(g, gettotalbytes(g));
   if (!isemergency)   /* do not run finalizers during emergency GC */
     callallpendingfinalizers(L, 1);
+  //gcs_timing_end(L, "luaC_fullgc");
 }
 
 /* }====================================================== */

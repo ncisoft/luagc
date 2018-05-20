@@ -157,6 +157,7 @@ static int luaB_rawset (lua_State *L) {
 }
 
 
+extern int lua_totalobjects(lua_State *L);
 static int luaB_collectgarbage (lua_State *L) {
   static const char *const opts[] = {"stop", "restart", "collect",
     "count", "step", "setpause", "setstepmul",
@@ -172,7 +173,10 @@ static int luaB_collectgarbage (lua_State *L) {
       int b = lua_gc(L, LUA_GCCOUNTB, 0);
       lua_pushnumber(L, res + ((lua_Number)b/1024));
       lua_pushinteger(L, b);
-      return 2;
+      int nobjs = lua_totalobjects(L);
+      lua_pushinteger(L, nobjs);
+
+      return 3;
     }
     case LUA_GCSTEP: case LUA_GCISRUNNING: {
       lua_pushboolean(L, res);
