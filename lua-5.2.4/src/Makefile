@@ -102,8 +102,14 @@ freebsd:
 
 generic: $(ALL)
 
+ifdef ARM
+	readline_lib = ""
+else
+	readline_lib = "-lreadline"
+endif
+
 linux:
-	$(MAKE) $(ALL) SYSCFLAGS="-DLUA_USE_LINUX" SYSLIBS="-Wl,-E -ldl -lreadline"
+	$(MAKE) $(ALL) SYSCFLAGS="-DLUA_USE_LINUX" SYSLIBS="-Wl,-E -ldl $(readline_lib)"
 
 macosx:
 	$(MAKE) $(ALL) SYSCFLAGS="-DLUA_USE_MACOSX" SYSLIBS="-lreadline" CC=cc
